@@ -211,10 +211,10 @@ void Player::on_gcode_received(void *argument)
             this->elapsed_secs = 0;
 
         } else if (gcode->m == 600) { // suspend print, Not entirely Marlin compliant
-            this->suspend_command("", &(StreamOutput::NullStream));
+            this->suspend_command("", gcode->stream);
 
         } else if (gcode->m == 601) { // resume print
-            this->resume_command("", &(StreamOutput::NullStream));
+            this->resume_command("", gcode->stream);
         }
     }
 }
@@ -494,7 +494,7 @@ void Player::suspend_command(string parameters, StreamOutput *stream )
         return;
     }
 
-    stream->printf("ok Suspending print, waiting for queue to empty...\n");
+    stream->printf("Suspending print, waiting for queue to empty...\n");
 
     suspended= true;
     if( this->playing_file ) {
@@ -518,7 +518,7 @@ void Player::suspend_part2()
     // wait for queue to empty
     THEKERNEL->conveyor->wait_for_empty_queue();
 
-    suspend_stream->printf("Saving current state...\n");
+    suspend_stream->printf("// Saving current state...\n");
 
     // save current XYZ position
     THEKERNEL->robot->get_axis_position(this->saved_position);
@@ -535,19 +535,18 @@ void Player::suspend_part2()
 
     this->saved_temperatures.clear();
     if(!this->leave_heaters_on) {
-        // save current temperatures
-        for(auto m : THEKERNEL->temperature_control_pool->get_controllers()) {
+        // save current temperatures, get a vector of all the controllers data
+        std::vector<struct pad_temperature> controllers;
+        bool ok = PublicData::get_value(temperature_control_checksum, poll_controls_checksum, &controllers);
+        if (ok) {
             // query each heater and save the target temperature if on
-            void *p;
-            if(PublicData::get_value( temperature_control_checksum, m, current_temperature_checksum, &p )) {
-                struct pad_temperature *temp= static_cast<struct pad_temperature *>(p);
+            for (auto &c : controllers) {
                 // TODO see if in exclude list
-                if(temp != nullptr && temp->target_temperature > 0) {
-                    this->saved_temperatures[m]= temp->target_temperature;
+                if(c.target_temperature > 0) {
+                    this->saved_temperatures[c.id]= c.target_temperature;
                 }
             }
         }
-
 
         // turn off heaters that were on
         for(auto& h : this->saved_temperatures) {
@@ -564,7 +563,7 @@ void Player::suspend_part2()
         THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
     }
 
-    suspend_stream->printf("Print Suspended, enter resume to continue printing\n");
+    suspend_stream->printf("// Print Suspended, enter resume to continue printing\n");
 }
 
 /**
@@ -581,7 +580,7 @@ void Player::resume_command(string parameters, StreamOutput *stream )
         return;
     }
 
-    stream->printf("ok resuming print...\n");
+    stream->printf("resuming print...\n");
 
     // set heaters to saved temps
     for(auto& h : this->saved_temperatures) {
@@ -604,11 +603,11 @@ void Player::resume_command(string parameters, StreamOutput *stream )
             }
 
             for(auto& h : this->saved_temperatures) {
-                void *p;
-                if(PublicData::get_value( temperature_control_checksum, h.first, current_temperature_checksum, &p )) {
-                    struct pad_temperature *temp= static_cast<struct pad_temperature *>(p);
-                    if(timeup) stream->printf("%s:%3.1f /%3.1f @%d ", temp->designator.c_str(), temp->current_temperature, ((temp->target_temperature == -1) ? 0.0 : temp->target_temperature), temp->pwm);
-                    wait= wait || (temp->current_temperature < h.second);
+                struct pad_temperature temp;
+                if(PublicData::get_value( temperature_control_checksum, current_temperature_checksum, h.first, &temp )) {
+                    if(timeup)
+                        stream->printf("%s:%3.1f /%3.1f @%d ", temp.designator.c_str(), temp.current_temperature, ((temp.target_temperature == -1) ? 0.0 : temp.target_temperature), temp.pwm);
+                    wait= wait || (temp.current_temperature < h.second);
                 }
             }
             if(timeup) stream->printf("\n");
